@@ -1,146 +1,225 @@
 (() => {
-  let debounceTimer   = null;
-  let rafId           = null;
-  let cachedContainer = null;
-  let lastMsgCount    = 0;
-  let currentUrl      = location.href;
+  let debounceTimer = null;
+  let messages = [];
+  let isScrolling = false;
 
-  /* ── Scroll container ─────────────────────────────────────── */
-  function findScrollContainer() {
-    if (cachedContainer && document.body.contains(cachedContainer)) return cachedContainer;
-
-    const seed = document.querySelector('[data-message-author-role="user"]');
-    if (!seed) return null;
-
-    let el = seed.parentElement;
-    while (el && el !== document.body) {
-      const { overflowY } = getComputedStyle(el);
-      if ((overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
-        cachedContainer = el;
-        return el;
-      }
-      el = el.parentElement;
-    }
-    cachedContainer = document.documentElement;
-    return cachedContainer;
+  /* ── Get ChatGPT user messages ────────────────────────────── */
+  function getUserMessages() {
+    return document.querySelectorAll('[data-message-author-role="user"]');
   }
 
-  /* ── True offset relative to a container ─────────────────── */
-  function offsetFromContainer(el, container) {
-    let top = 0;
-    let node = el;
-    while (node && node !== container) {
-      top += node.offsetTop;
-      node = node.offsetParent;
-    }
-    return top;
+  /* ── Refresh messages array ───────────────────────────────– */
+  function refreshMessages() {
+    const userMessages = getUserMessages();
+    
+    messages = Array.from(userMessages).map((msg, idx) => ({
+      id: idx,
+      number: idx + 1,
+      text: msg.innerText.trim().slice(0, 100),
+      element: msg
+    }));
+
+    return messages;
   }
 
-  /* ── Build markers ────────────────────────────────────────── */
-  function createMarkers() {
-    const messages = document.querySelectorAll('[data-message-author-role="user"]');
-    if (messages.length === 0) return;
+  /* ── Scroll to message with proper detection ──────────────── */
+  function scrollToMessage(msgIndex) {
+    if (msgIndex < 0 || msgIndex >= messages.length) return;
 
-    // Skip rebuild if nothing new arrived AND url is same
-    if (messages.length === lastMsgCount && currentUrl === location.href && document.querySelector('.cgpt-rail')) return;
-    lastMsgCount = messages.length;
-    currentUrl   = location.href;
-
-    // Tear down old UI
-    document.querySelector('.cgpt-rail')?.remove();
-    document.querySelector('.cgpt-preview')?.remove();
-
-    const container = findScrollContainer();
-    if (!container) return;
-
-    /* Rail */
-    const rail = document.createElement('div');
-    rail.className = 'cgpt-rail';
-    document.body.appendChild(rail);
-
-    /* Tooltip */
-    const preview = document.createElement('div');
-    preview.className = 'cgpt-preview';
-    document.body.appendChild(preview);
-
-    /* Line connector */
-    const line = document.createElement('div');
-    line.className = 'cgpt-line';
-    rail.appendChild(line);
-
-    /* Positions */
-    const offsets = Array.from(messages).map(m => offsetFromContainer(m, container));
-    const min   = offsets[0];
-    const max   = offsets[offsets.length - 1];
-    const span  = max - min || 1;
-    const PAD   = 4;
-    const RANGE = 100 - PAD * 2;
-
-    messages.forEach((msg, i) => {
-      const pct = PAD + ((offsets[i] - min) / span) * RANGE;
-
-      const dot = document.createElement('div');
-      dot.className = 'cgpt-dot';
-      dot.style.top = `${pct}%`;
-      dot.setAttribute('data-index', i + 1);
-
-      /* Hover — show preview */
-      dot.addEventListener('mouseenter', () => {
-        const text = msg.innerText.trim().slice(0, 140) || '(empty)';
-        preview.innerHTML =
-          `<span class="cgpt-preview-num">Q${i + 1}</span>${text}`;
-        preview.style.display = 'block';
-
-        const { top: dt } = dot.getBoundingClientRect();
-        const ph = preview.offsetHeight || 76;
-        const ty = Math.max(8, Math.min(dt - ph / 2, window.innerHeight - ph - 8));
-        preview.style.top = `${ty}px`;
-      });
-
-      dot.addEventListener('mouseleave', () => {
-        preview.style.display = 'none';
-      });
-
-      /* Click — scroll to message */
-      dot.addEventListener('click', () => {
-        const target = offsets[i] - container.clientHeight / 2 + msg.offsetHeight / 2;
-        container.scrollTo({ top: target, behavior: 'smooth' });
-
-        msg.classList.add('cgpt-highlight');
-        setTimeout(() => msg.classList.remove('cgpt-highlight'), 2000);
-      });
-
-      rail.appendChild(dot);
-    });
-
-    /* Position the connector line between first and last dot */
-    const firstDot = rail.querySelector('.cgpt-dot');
-    const lastDot  = rail.querySelectorAll('.cgpt-dot');
-    if (firstDot && lastDot.length > 1) {
-      line.style.top    = `${PAD}%`;
-      line.style.bottom = `${PAD}%`;
+    isScrolling = true;
+    const msg = messages[msgIndex].element;
+    
+    if (!msg || !msg.parentElement) {
+      console.warn('[Prompt Marks] Message element not found');
+      isScrolling = false;
+      return;
     }
-  }
 
-  /* ── Debounce via rAF ─────────────────────────────────────── */
-  function scheduleUpdate() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(createMarkers);
+    // Use scrollIntoView for reliable scrolling (ChatGPT optimized)
+    msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Highlight message after scroll completes
+    setTimeout(() => {
+      msg.classList.add('prompt-marks-highlight');
+      setTimeout(() => {
+        msg.classList.remove('prompt-marks-highlight');
+        isScrolling = false;
+      }, 2000);
     }, 600);
   }
 
-  /* ── MutationObserver ─────────────────────────────────────── */
-  const IGNORE = new Set(['cgpt-rail', 'cgpt-preview', 'cgpt-dot', 'cgpt-line', 'cgpt-highlight']);
+  /* ── Update popup list with fresh messages ─────────────────– */
+  function updatePopupList() {
+    const popup = document.querySelector('.prompt-marks-popup');
+    if (!popup) return;
+
+    refreshMessages();
+
+    const listContainer = popup.querySelector('.prompt-marks-list');
+    const footer = popup.querySelector('.prompt-marks-footer');
+
+    if (listContainer && messages.length > 0) {
+      listContainer.innerHTML = messages.map(msg => `
+        <div class="prompt-marks-item" data-id="${msg.id}">
+          <span class="prompt-marks-number">Q${msg.number}</span>
+          <span class="prompt-marks-text">${msg.text}${msg.text.length === 100 ? '...' : ''}</span>
+        </div>
+      `).join('');
+
+      // Attach click handlers
+      listContainer.querySelectorAll('.prompt-marks-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const id = parseInt(item.dataset.id);
+          scrollToMessage(id);
+        });
+      });
+    }
+
+    // Update count
+    if (footer) {
+      footer.querySelector('.prompt-marks-count').textContent = 
+        `${messages.length} message${messages.length !== 1 ? 's' : ''}`;
+    }
+  }
+
+  /* ── Create popup UI (only once) ───────────────────────────– */
+  function createPopup() {
+    let popup = document.querySelector('.prompt-marks-popup');
+    
+    if (popup) {
+      // Toggle existing popup
+      popup.classList.toggle('active');
+      if (popup.classList.contains('active')) {
+        updatePopupList();
+      }
+      return;
+    }
+
+    // Create new popup
+    popup = document.createElement('div');
+    popup.className = 'prompt-marks-popup';
+
+    const header = document.createElement('div');
+    header.className = 'prompt-marks-header';
+    header.innerHTML = `
+      <h3>📝 Sent Messages</h3>
+      <button class="prompt-marks-close" title="Close">✕</button>
+    `;
+
+    const listContainer = document.createElement('div');
+    listContainer.className = 'prompt-marks-list';
+
+    const footer = document.createElement('div');
+    footer.className = 'prompt-marks-footer';
+    footer.innerHTML = `<span class="prompt-marks-count">0 messages</span>`;
+
+    popup.appendChild(header);
+    popup.appendChild(listContainer);
+    popup.appendChild(footer);
+
+    // Prevent popup from affecting page scroll
+    popup.addEventListener('wheel', (e) => {
+      const isListScrollable = 
+        listContainer.scrollHeight > listContainer.clientHeight;
+      if (!isListScrollable) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    document.body.appendChild(popup);
+
+    // Close button
+    header.querySelector('.prompt-marks-close').addEventListener('click', (e) => {
+      e.stopPropagation();
+      popup.classList.remove('active');
+    });
+
+    // Prevent clicks inside popup from bubbling
+    popup.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    // Open popup with messages
+    popup.classList.add('active');
+    updatePopupList();
+  }
+
+  /* ── Create floating button ───────────────────────────────── */
+  function createButton() {
+    let btn = document.querySelector('.prompt-marks-btn');
+    if (btn) return;
+
+    btn = document.createElement('button');
+    btn.className = 'prompt-marks-btn';
+    btn.title = 'Open message list';
+    btn.innerHTML = '💬';
+
+    // Prevent button click from scrolling or bubbling
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      createPopup();
+    });
+
+    document.body.appendChild(btn);
+  }
+
+  /* ── Schedule updates on new messages ──────────────────────– */
+  function scheduleUpdate() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      // Only update if popup is open
+      const popup = document.querySelector('.prompt-marks-popup');
+      if (popup && popup.classList.contains('active')) {
+        updatePopupList();
+      }
+    }, 500);
+  }
+
+  /* ── MutationObserver for new messages ──────────────────────– */
+  const IGNORE = new Set(['prompt-marks-popup', 'prompt-marks-btn', 'prompt-marks-highlight']);
 
   new MutationObserver(mutations => {
-    const relevant = mutations.some(m =>
-      [...m.addedNodes].some(n => n.nodeType === 1 && !IGNORE.has(n.className))
-    );
-    if (relevant) scheduleUpdate();
-  }).observe(document.body, { childList: true, subtree: true });
+    // Only check for new user messages being added
+    const hasNewMessages = mutations.some(m => {
+      return [...m.addedNodes].some(n => {
+        if (n.nodeType !== 1) return false;
+        return !IGNORE.has(n.className) && 
+               n.getAttribute && 
+               n.getAttribute('data-message-author-role') === 'user';
+      });
+    });
 
-  /* ── Bootstrap ────────────────────────────────────────────── */
-  setTimeout(createMarkers, 1800);
+    if (hasNewMessages && !isScrolling) {
+      scheduleUpdate();
+    }
+  }).observe(document.body, { 
+    childList: true, 
+    subtree: true,
+    attributes: false,
+    characterData: false
+  });
+
+  /* ── Bootstrap: Initialize extension ──────────────────────– */
+  function bootstrap() {
+    try {
+      // Wait for ChatGPT to load messages
+      const checkInterval = setInterval(() => {
+        const userMsg = document.querySelector('[data-message-author-role="user"]');
+        if (userMsg) {
+          clearInterval(checkInterval);
+          createButton();
+          refreshMessages();
+        }
+      }, 200);
+
+      // Timeout after 10 seconds
+      setTimeout(() => clearInterval(checkInterval), 10000);
+    } catch (e) {
+      console.warn('[Prompt Marks] Bootstrap error:', e);
+    }
+  }
+
+  // Start after a brief delay
+  setTimeout(bootstrap, 500);
 })();

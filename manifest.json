@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Scroll Marker",
-  "version": "1.0",
-  "description": "Mark and navigate your messages in ChatGPT conversations",
+  "name": "Prompt Marks",
+  "version": "2.0",
+  "description": "ChatGPT message navigator - jump between your sent messages instantly",
   "permissions": ["activeTab", "scripting"],
   "content_scripts": [
     {
